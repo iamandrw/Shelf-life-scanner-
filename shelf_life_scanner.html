@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shelf Life Scanner</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+<style>
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; background:#f4f1ea; margin:0; padding:16px; -webkit-text-size-adjust:100%; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  .card { width:100%; max-width:420px; background:#fff; border-radius:12px; padding:clamp(14px, 4vw, 24px); box-shadow:0 2px 8px rgba(0,0,0,0.08); }
+  h2 { color:#1e2a38; margin-top:0; font-size:clamp(1em, 4vw, 1.2em); }
+  label { display:block; font-size:0.8em; color:#444; margin-top:12px; margin-bottom:4px; }
+  input { width:100%; padding:10px; border:1px solid #ccc; border-radius:6px; font-size:16px; }
+  button { margin-top:14px; width:100%; padding:12px; background:#1e2a38; color:#fff; border:none; border-radius:6px; font-size:1em; cursor:pointer; }
+  button:hover { background:#2c3e50; }
+  button.secondary { background:#e8e4da; color:#1e2a38; }
+  button.secondary:hover { background:#ddd7c8; }
+  #scanner-container { position:relative; width:100%; margin-top:10px; border-radius:8px; overflow:hidden; display:none; background:#000; }
+  #scanner-container video, #scanner-container canvas { width:100%; display:block; }
+  .scan-line { position:absolute; left:5%; right:5%; top:50%; height:2px; background:#c9a54e; box-shadow:0 0 6px #c9a54e; }
+  #status { font-size:0.78em; color:#777; margin-top:8px; min-height:1.2em; }
+  #result { margin-top:14px; padding:12px; border-radius:8px; font-weight:bold; text-align:center; display:none; font-size:0.95em; }
+  .pass { background:#e3f5e6; color:#1e6b2f; }
+  .fail { background:#fbe4e4; color:#a02020; }
+  .info { background:#eef3fa; color:#1e2a38; font-weight:normal; text-align:left; font-size:0.85em; }
+  .note { font-size:0.75em; color:#777; margin-top:10px; line-height:1.4; }
+  .date-row { display:flex; gap:6px; }
+  .date-row input { text-align:center; }
+  .date-row input[data-part="dd"], .date-row input[data-part="mm"] { width:28%; }
+  .date-row input[data-part="yyyy"] { width:44%; }
+  @media (min-width: 620px) {
+    .card { max-width:520px; }
+    .two-col { display:flex; gap:16px; }
+    .two-col > div { flex:1; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Shelf Life Scanner</h2>
+
+  <button id="scanBtn">Scan Barcode</button>
+  <div id="scanner-container">
+    <div class="scan-line"></div>
+  </div>
+  <div id="status"></div>
+
+  <div class="two-col">
+    <div>
+      <label>Manufacture Date</label>
+      <div class="date-row">
+        <input type="number" id="mfgDD" placeholder="DD" min="1" max="31" data-part="dd">
+        <input type="number" id="mfgMM" placeholder="MM" min="1" max="12" data-part="mm">
+        <input type="number" id="mfgYYYY" placeholder="YYYY" min="1900" max="2100" data-part="yyyy">
+      </div>
+    </div>
+    <div>
+      <label>Expiry Date</label>
+      <div class="date-row">
+        <input type="number" id="expDD" placeholder="DD" min="1" max="31" data-part="dd">
+        <input type="number" id="expMM" placeholder="MM" min="1" max="12" data-part="mm">
+        <input type="number" id="expYYYY" placeholder="YYYY" min="1900" max="2100" data-part="yyyy">
+      </div>
+    </div>
+  </div>
+
+  <label>Reference Date (today)</label>
+  <input type="text" id="refDate" readonly style="background:#f0f0f0; color:#555;">
+
+  <label>Minimum Acceptable Remaining Shelf Life (%)</label>
+  <input type="number" id="limit" value="65">
+
+  <button onclick="calculate()">Calculate</button>
+  <div id="result"></div>
+  <button class="secondary" onclick="clearAll()">Clear</button>
+
+  <div class="note">Camera scan reads Code 128 / GS1-128 linear barcodes. If a scanned code contains GS1 batch/date fields (AI 01, 10, 11, 17), manufacture and expiry dates auto-fill. Plain EAN/UPC codes or 2D DataMatrix grids are not date-bearing or not supported by this scanner — enter dates manually in that case.</div>
+</div>
+
+<script>
+function todayStr() {
+  const d = new Date();
+  return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear();
+}
+document.getElementById('refDate').value = todayStr();
+
+function setStatus(msg, isError) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.style.color = isError ? '#a02020' : '#777';
+}
+
+function ymdToFields(yy, mm, dd, prefixDD, prefixMM, prefixYYYY) {
+  // GS1 dates are YYMMDD, 2-digit year. Assume 2000s.
+  const fullYear = 2000 + parseInt(yy, 10);
+  document.getElementById(prefixDD).value = parseInt(dd, 10);
+  document.getElementById(prefixMM).value = parseInt(mm, 10);
+  document.getElementById(prefixYYYY).value = fullYear;
+}
+
+// Parse a GS1 element string for AIs: 01 (GTIN,14), 11 (prod date,6), 17 (expiry date,6), 10 (batch, variable)
+function parseGS1(raw) {
+  const GS = String.fromCharCode(29); // ASCII Group Separator
+  let s = raw.replace(/^\]C1|^\]C0/, ''); // strip symbology identifiers if present
+  let i = 0;
+  const found = { gtin:null, prodDate:null, expDate:null, batch:null };
+  while (i < s.length) {
+    // check 2-digit AI
+    const ai2 = s.substr(i, 2);
+    if (ai2 === '01' && s.length - i >= 16) {
+      found.gtin = s.substr(i+2, 14);
+      i += 16;
+      continue;
+    }
+    if (ai2 === '11' && s.length - i >= 8) {
+      found.prodDate = s.substr(i+2, 6);
+      i += 8;
+      continue;
+    }
+    if (ai2 === '17' && s.length - i >= 8) {
+      found.expDate = s.substr(i+2, 6);
+      i += 8;
+      continue;
+    }
+    if (ai2 === '10') {
+      let rest = s.substr(i+2);
+      let gsIdx = rest.indexOf(GS);
+      let val = gsIdx === -1 ? rest : rest.substr(0, gsIdx);
+      found.batch = val;
+      i += 2 + val.length + (gsIdx === -1 ? 0 : 1);
+      continue;
+    }
+    // unknown / unhandled AI or noise - advance one char to avoid infinite loop
+    i += 1;
+  }
+  return found;
+}
+
+function handleDecodedCode(raw) {
+  setStatus('Scanned: ' + raw);
+  const parsed = parseGS1(raw);
+  let filled = [];
+
+  if (parsed.expDate && parsed.expDate.length === 6) {
+    ymdToFields(parsed.expDate.substr(0,2), parsed.expDate.substr(2,2), parsed.expDate.substr(4,2), 'expDD', 'expMM', 'expYYYY');
+    filled.push('expiry date');
+  }
+  if (parsed.prodDate && parsed.prodDate.length === 6) {
+    ymdToFields(parsed.prodDate.substr(0,2), parsed.prodDate.substr(2,2), parsed.prodDate.substr(4,2), 'mfgDD', 'mfgMM', 'mfgYYYY');
+    filled.push('manufacture date');
+  }
+
+  if (filled.length > 0) {
+    setStatus('Auto-filled: ' + filled.join(' & ') + (parsed.batch ? (' | Batch: ' + parsed.batch) : '') + (parsed.gtin ? (' | GTIN: ' + parsed.gtin) : ''));
+  } else {
+    setStatus('Barcode read (' + raw + ') — no GS1 date fields found. Enter dates manually.', true);
+  }
+  stopScanner();
+}
+
+let scannerRunning = false;
+
+function startScanner() {
+  const container = document.getElementById('scanner-container');
+  container.style.display = 'block';
+  setStatus('Starting camera...');
+
+  Quagga.init({
+    inputStream: {
+      name: "Live",
+      type: "LiveStream",
+      target: container,
+      constraints: { facingMode: "environment" }
+    },
+    decoder: {
+      readers: ["code_128_reader", "ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader", "code_39_reader"]
+    },
+    locate: true
+  }, function(err) {
+    if (err) {
+      setStatus('Camera error: ' + err.message + '. You may need to grant camera permission, or enter dates manually.', true);
+      container.style.display = 'none';
+      return;
+    }
+    Quagga.start();
+    scannerRunning = true;
+    setStatus('Point the camera at the barcode...');
+  });
+
+  Quagga.onDetected(function(data) {
+    if (data && data.codeResult && data.codeResult.code) {
+      handleDecodedCode(data.codeResult.code);
+    }
+  });
+}
+
+function stopScanner() {
+  if (scannerRunning) {
+    Quagga.stop();
+    scannerRunning = false;
+  }
+  document.getElementById('scanner-container').style.display = 'none';
+  document.getElementById('scanBtn').textContent = 'Scan Barcode';
+}
+
+document.getElementById('scanBtn').addEventListener('click', function() {
+  if (scannerRunning) {
+    stopScanner();
+  } else {
+    this.textContent = 'Stop Scanning';
+    startScanner();
+  }
+});
+
+function calculate() {
+  const mfgDD = document.getElementById('mfgDD').value;
+  const mfgMM = document.getElementById('mfgMM').value;
+  const mfgYYYY = document.getElementById('mfgYYYY').value;
+  const expDD = document.getElementById('expDD').value;
+  const expMM = document.getElementById('expMM').value;
+  const expYYYY = document.getElementById('expYYYY').value;
+  const limit = parseFloat(document.getElementById('limit').value);
+  const resultDiv = document.getElementById('result');
+
+  if (!mfgDD || !mfgMM || !mfgYYYY || !expDD || !expMM || !expYYYY) {
+    resultDiv.style.display = 'block';
+    resultDiv.className = 'fail';
+    resultDiv.innerHTML = 'Please fill in all date fields.';
+    return;
+  }
+
+  const mfg = new Date(parseInt(mfgYYYY), parseInt(mfgMM) - 1, parseInt(mfgDD));
+  const exp = new Date(parseInt(expYYYY), parseInt(expMM) - 1, parseInt(expDD));
+
+  const mfgValid = mfg.getDate() === parseInt(mfgDD) && mfg.getMonth() === parseInt(mfgMM) - 1 && mfg.getFullYear() === parseInt(mfgYYYY);
+  const expValid = exp.getDate() === parseInt(expDD) && exp.getMonth() === parseInt(expMM) - 1 && exp.getFullYear() === parseInt(expYYYY);
+
+  if (!mfgValid || !expValid) {
+    resultDiv.style.display = 'block';
+    resultDiv.className = 'fail';
+    resultDiv.innerHTML = 'Please enter valid dates.';
+    return;
+  }
+
+  const today = new Date();
+  const ref = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+  const totalLife = exp - mfg;
+  if (totalLife <= 0) {
+    resultDiv.style.display = 'block';
+    resultDiv.className = 'fail';
+    resultDiv.innerHTML = 'Expiry date must be after manufacture date.';
+    return;
+  }
+
+  const remainingLife = exp - ref;
+  const pctRemaining = (remainingLife / totalLife) * 100;
+  const pctClamped = Math.max(0, pctRemaining);
+  const pass = pctClamped >= limit;
+
+  resultDiv.style.display = 'block';
+  resultDiv.className = pass ? 'pass' : 'fail';
+  resultDiv.innerHTML = pctClamped.toFixed(2) + '% remaining — ' +
+    (pctRemaining < 0 ? 'EXPIRED' : (pass ? 'PASSES' : 'FAILS')) +
+    ' ' + limit + '% limit';
+}
+
+function clearAll() {
+  ['mfgDD','mfgMM','mfgYYYY','expDD','expMM','expYYYY'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('result').style.display = 'none';
+  setStatus('');
+}
+</script>
+</body>
+</html>
