@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shelf Life Calculator</title>
+<style>
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; background:#f4f1ea; margin:0; padding:16px; -webkit-text-size-adjust:100%; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  .card { width:100%; max-width:420px; background:#fff; border-radius:12px; padding:clamp(14px, 4vw, 24px); box-shadow:0 2px 8px rgba(0,0,0,0.08); box-sizing:border-box; }
+  h2 { color:#1e2a38; margin-top:0; font-size:clamp(1em, 4vw, 1.2em); }
+  label { display:block; font-size:0.8em; color:#444; margin-top:12px; margin-bottom:4px; }
+  input { width:100%; padding:10px; border:1px solid #ccc; border-radius:6px; box-sizing:border-box; font-size:16px; }
+  button { margin-top:16px; width:100%; padding:12px; background:#1e2a38; color:#fff; border:none; border-radius:6px; font-size:1em; cursor:pointer; }
+  button:hover { background:#2c3e50; }
+  #result { margin-top:16px; padding:12px; border-radius:8px; font-weight:bold; text-align:center; display:none; font-size:0.95em; }
+  .pass { background:#e3f5e6; color:#1e6b2f; }
+  .fail { background:#fbe4e4; color:#a02020; }
+  .note { font-size:0.75em; color:#777; margin-top:10px; line-height:1.4; }
+
+  /* Short/landscape screens: trim vertical spacing */
+  @media (max-height: 480px) {
+    body { align-items:flex-start; padding:10px; }
+    .card { padding:12px; }
+    label { margin-top:6px; }
+    input { padding:7px; }
+    button { margin-top:10px; padding:9px; }
+    #result { margin-top:10px; padding:8px; }
+  }
+
+  /* Wide landscape phones/tablets: allow two-column date groups side by side */
+  @media (min-width: 620px) {
+    .card { max-width:520px; }
+    .date-row { display:flex; gap:16px; }
+    .date-row > div { flex:1; }
+  }
+
+  /* Larger screens: roomier card */
+  @media (min-width: 900px) {
+    .card { max-width:600px; padding:32px; }
+    h2 { font-size:1.4em; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Remaining Shelf Life Calculator</h2>
+  <div class="date-row">
+  <div>
+  <label>Manufacture Date</label>
+  <div style="display:flex; gap:6px;">
+    <input type="number" id="mfgDD" placeholder="DD" min="1" max="31" style="width:28%; padding:10px 6px; text-align:center;">
+    <input type="number" id="mfgMM" placeholder="MM" min="1" max="12" style="width:28%; padding:10px 6px; text-align:center;">
+    <input type="number" id="mfgYYYY" placeholder="YYYY" min="1900" max="2100" style="width:44%; padding:10px 6px; text-align:center;">
+  </div>
+  </div>
+  <div>
+  <label>Expiry Date</label>
+  <div style="display:flex; gap:6px;">
+    <input type="number" id="expDD" placeholder="DD" min="1" max="31" style="width:28%; padding:10px 6px; text-align:center;">
+    <input type="number" id="expMM" placeholder="MM" min="1" max="12" style="width:28%; padding:10px 6px; text-align:center;">
+    <input type="number" id="expYYYY" placeholder="YYYY" min="1900" max="2100" style="width:44%; padding:10px 6px; text-align:center;">
+  </div>
+  </div>
+  </div>
+  <label>Reference Date (today)</label>
+  <input type="text" id="refDate" readonly style="background:#f0f0f0; color:#555;">
+  <label>Minimum Acceptable Remaining Shelf Life (%)</label>
+  <input type="number" id="limit" value="65">
+  <button onclick="calculate()">Calculate</button>
+  <div id="result"></div>
+  <div class="note">% Remaining = (Expiry − Reference Date) / (Expiry − Manufacture Date) × 100</div>
+</div>
+
+<script>
+function todayStr() {
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2,'0');
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const yyyy = d.getFullYear();
+  return dd + '/' + mm + '/' + yyyy;
+}
+document.getElementById('refDate').value = todayStr();
+
+function calculate() {
+  const mfgDD = document.getElementById('mfgDD').value;
+  const mfgMM = document.getElementById('mfgMM').value;
+  const mfgYYYY = document.getElementById('mfgYYYY').value;
+  const expDD = document.getElementById('expDD').value;
+  const expMM = document.getElementById('expMM').value;
+  const expYYYY = document.getElementById('expYYYY').value;
+  const limit = parseFloat(document.getElementById('limit').value);
+  const resultDiv = document.getElementById('result');
+
+  if (!mfgDD || !mfgMM || !mfgYYYY || !expDD || !expMM || !expYYYY) {
+    resultDiv.style.display = 'block';
+    resultDiv.className = 'fail';
+    resultDiv.innerHTML = 'Please fill in all date fields.';
+    return;
+  }
+
+  const mfg = new Date(parseInt(mfgYYYY), parseInt(mfgMM) - 1, parseInt(mfgDD));
+  const exp = new Date(parseInt(expYYYY), parseInt(expMM) - 1, parseInt(expDD));
+  const today = new Date();
+  const ref = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+  const mfgValid = mfg.getDate() === parseInt(mfgDD) && mfg.getMonth() === parseInt(mfgMM) - 1 && mfg.getFullYear() === parseInt(mfgYYYY);
+  const expValid = exp.getDate() === parseInt(expDD) && exp.getMonth() === parseInt(expMM) - 1 && exp.getFullYear() === parseInt(expYYYY);
+
+  if (!mfgValid || !expValid) {
+    resultDiv.style.display = 'block';
+    resultDiv.className = 'fail';
+    resultDiv.innerHTML = 'Please enter valid dates.';
+    return;
+  }
+
+  const totalLife = exp - mfg;
+  const remainingLife = exp - ref;
+
+  if (totalLife <= 0) {
+    resultDiv.style.display = 'block';
+    resultDiv.className = 'fail';
+    resultDiv.innerHTML = 'Expiry date must be after manufacture date.';
+    return;
+  }
+
+  const pctRemaining = (remainingLife / totalLife) * 100;
+  const pctClamped = Math.max(0, pctRemaining);
+  const pass = pctClamped >= limit;
+
+  resultDiv.style.display = 'block';
+  resultDiv.className = pass ? 'pass' : 'fail';
+  resultDiv.innerHTML = pctClamped.toFixed(2) + '% remaining — ' +
+    (pctRemaining < 0 ? 'EXPIRED' : (pass ? 'PASSES' : 'FAILS')) +
+    ' ' + limit + '% limit';
+}
+</script>
+</body>
+</html>
